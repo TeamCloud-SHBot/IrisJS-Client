@@ -4,10 +4,9 @@
 const express = require("express");
 const axios = require("axios");
 
-//
-// ======================= IrisAPI ======================= //
-//
-
+//////////////////////
+// Iris HTTP API 래퍼 //
+//////////////////////
 class IrisAPI {
   constructor(baseUrl) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -31,8 +30,7 @@ class IrisAPI {
 
   // /query
   async query(query, bind = []) {
-    const body = { query, bind };
-    const res = await this.http.post("/query", body);
+    const res = await this.http.post("/query", { query, bind });
     return res.data; // { success, message, data: [...] }
   }
 
@@ -43,42 +41,38 @@ class IrisAPI {
   }
 }
 
-//
-// ======================= db (reqUserInfo 등) ======================= //
-//
+/////////////////////////////////////
+// irisDB: DB 조회/로그 조회 함수들 //
+/////////////////////////////////////
+function createIrisDB(iris) {
+  const irisDB = {};
 
-function createdb(iris) {
-  const db = {};
-
-  /** 1. 유저 정보 조회 (open_chat_member) */
-  db.reqUserInfo = async (userId) => {
+  irisDB.getUserInfo = async (userId) => {
     const sql = "SELECT * FROM open_chat_member WHERE user_id = ?";
     const result = await iris.query(sql, [userId]);
     return (result.data && result.data[0]) || null;
   };
 
-  /** 2. 채팅방 정보 조회 (chat_rooms) */
-  db.reqChatInfo = async (chatId) => {
+  irisDB.getChatInfo = async (chatId) => {
     const sql = "SELECT * FROM chat_rooms WHERE id = ?";
     const result = await iris.query(sql, [chatId]);
     return (result.data && result.data[0]) || null;
   };
 
-  /** 3. 채팅 로그 한 건 조회 (chat_logs) */
-  db.findChatLog = async (logId) => {
+  irisDB.findChatLog = async (logId) => {
     const sql = "SELECT * FROM chat_logs WHERE id = ?";
     const result = await iris.query(sql, [logId]);
     return (result.data && result.data[0]) || null;
   };
 
   /** 4. 단일 쿼리 (첫 행만) */
-  db.query = async (sql) => {
+  irisDB.query = async (sql) => {
     const result = await iris.query(sql, []);
     return (result.data && result.data[0]) || null;
   };
 
   /** 5. 이전 채팅 로그 */
-  db.getPrevChat = async (chatRow) => {
+  irisDB.getPrevChat = async (chatRow) => {
     const sid = chatRow?.attachment?.src_logId;
     if (!sid) return null;
 
@@ -94,7 +88,7 @@ function createdb(iris) {
   };
 
   /** 6. 다음 채팅 로그 */
-  db.getNextChat = async (chatRow) => {
+  irisDB.getNextChat = async (chatRow) => {
     const sid = chatRow?.attachment?.src_logId;
     if (!sid) return null;
 
@@ -110,7 +104,7 @@ function createdb(iris) {
   };
 
   /** (옵션) 공지 가져오기 */
-  db.getNotices = async (chatId) => {
+  irisDB.getNotices = async (chatId) => {
     const aotRes = await iris.getAot();
     const auth = aotRes.aot;
     if (!auth) throw new Error("AOT 정보 없음");
@@ -139,7 +133,7 @@ function createdb(iris) {
   };
 
   /** (옵션) 공지 공유 */
-  db.shareNotice = async (chatId, noticeId) => {
+  irisDB.shareNotice = async (chatId, noticeId) => {
     const aotRes = await iris.getAot();
     const auth = aotRes.aot;
     if (!auth) throw new Error("AOT 정보 없음");
@@ -168,7 +162,7 @@ function createdb(iris) {
   };
 
   /** (옵션) 말풍선 리액션 */
-  db.react = async (chatId, logId, type = 3) => {
+  irisDB.react = async (chatId, logId, type = 3) => {
     const aotRes = await iris.getAot();
     const auth = aotRes.aot;
     if (!auth) throw new Error("AOT 정보 없음");
@@ -199,7 +193,7 @@ function createdb(iris) {
     return res.data;
   };
 
-  return db;
+  return irisDB;
 }
 
 //
@@ -207,16 +201,16 @@ function createdb(iris) {
 // /message 바디 + db + iris → ctx 생성
 //
 
-async function buildContext(data, db, iris) {
+async function buildContext(data, irisDB, iris) {
   const json = data.json || {};
   const userId = json.user_id;
   const chatId = json.chat_id;
-  const logId  = json.id;
+  const logId = json.id; // chat_logs.id (메시지 로그 id)
 
   // 1) DB 조회
-  const userRow = userId ? await db.reqUserInfo(userId) : null;
-  const chatRow = chatId ? await db.reqChatInfo(chatId) : null;
-  const logRow  = logId  ? await db.findChatLog(logId) : null;
+  const userRow = userId ? await irisDB.getUserInfo(userId) : null;
+  const chatRow = chatId ? await irisDB.getChatInfo(chatId) : null;
+  const logRow = logId ? await irisDB.findChatLog(logId) : null;
 
   // 2) 메시지 본문
   const content =
@@ -230,14 +224,10 @@ async function buildContext(data, db, iris) {
   try {
     const attStr = (logRow && logRow.attachment) || json.attachment;
     if (attStr) {
-      const att = (typeof attStr === "string") ? JSON.parse(attStr) : attStr;
-      if (att.urls && att.urls.length > 0) {
-        image = att.urls[0];
-      }
+      const att = typeof attStr === "string" ? JSON.parse(attStr) : attStr;
+      if (att && att.urls && att.urls.length > 0) image = att.urls[0];
     }
-  } catch (e) {
-    // 이미지 없거나 파싱 실패 시 무시
-  }
+  } catch (_) {}
 
   // 4) 최종 ctx 구성
   const ctx = {
@@ -245,31 +235,29 @@ async function buildContext(data, db, iris) {
 
     user: {
       name: userRow ? userRow.nickname : (data.sender || null),
-      id:   userRow ? userRow.user_id : String(userId || ""),
+      id: userRow ? String(userRow.user_id) : String(userId || ""),
       profileImage: userRow
-        ? (
-          userRow.full_profile_image_url ||
+        ? (userRow.full_profile_image_url ||
           userRow.profile_image_url ||
           userRow.original_profile_image_url ||
-          null
-        )
+           null)
         : null,
-      type: userRow ? userRow.profile_type : null,
+      type: userRow ? (userRow.profile_type || null) : null,
       raw: userRow
     },
 
     channel: {
       id:   chatRow ? chatRow.id : String(chatId || ""),
-      name: data.room || null,     // 아이리스가 준 방 이름
-      bannerImage: null,           // 필요시 moim_meta 파싱해서 설정 가능
+      name: data.room || null,
+      bannerImage: null,
       raw: chatRow
     },
 
     message: {
       content: content,
-      id:      logRow ? logRow.id : String(logId || ""),
-      image:   image,
-      raw:     logRow || json
+      id: logRow ? String(logRow.id) : String(logId || ""),
+      image: image,
+      raw: logRow || json
     },
 
     // 간편 send
@@ -294,19 +282,16 @@ class Bot {
   /**
    * @param {string} irisUrl  예: "127.0.0.1"
    * @param {number} port     이 봇이 열 HTTP 서버 포트 (예: 8080)
-   * @param {string} endpoint Iris 대시보드에 적을 엔드포인트 경로 (기본 "/message")
    */
-  constructor(irisUrl, port = 8080, endpoint = "/message") {
+  constructor(irisUrl, port = 8080) {
     this.iris = new IrisAPI(`http://${irisUrl}:3000`);
-    this.port = port;
-    this.endpoint = endpoint;
+    this.irisDB = createIrisDB(this.iris);
 
-    this.listeners = {
-      message: [],
-      error: []
-    };
+    this.port = Number(port);
+    this.endpointPath = "/message";
 
-    this.db = createdb(this.iris);
+    this.listeners = { message: [], error: [] };
+
     this.app = express();
     this.app.use(express.json());
     this.server = null;
@@ -327,10 +312,9 @@ class Bot {
   }
 
   start() {
-    // Iris → Bot 웹훅
-    this.app.post(this.endpoint, async (req, res) => {
+    this.app.post(this.endpointPath, async (req, res) => {
       try {
-        const ctx = await buildContext(req.body, this.db, this.iris);
+        const ctx = await buildContext(req.body, this.irisDB, this.iris);
         await this._emit("message", ctx);
         res.json({ ok: true });
       } catch (err) {
@@ -345,7 +329,7 @@ class Bot {
         `[Bot] HTTP 서버 실행 중: http://${this.irisUrl}:${this.port}${this.endpoint}`
       );
       console.log(
-        `[Bot] Iris 대시보드 Endpoint 에 아래 주소를 설정하세요:\n  http://${this.irisUrl}:${this.port}${this.endpoint}`
+        `[Bot] Iris 서버(API) : http://${this.irisUrl}:${this.port}${this.endpoint}`
       );
     });
   }
