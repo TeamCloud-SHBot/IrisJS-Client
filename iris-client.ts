@@ -2,10 +2,6 @@
 import express, { Express, Request, Response } from "express";
 import axios, { AxiosInstance } from "axios";
 
-//////////////////////
-// 타입 정의
-//////////////////////
-
 export type EventName =
   | "message"
   | "join"
@@ -17,54 +13,26 @@ export type EventName =
 
 export interface IrisWebhookBody {
   room?: string;
-  msg?: string;
+  msg?: any;
   sender?: string;
   json?: Record<string, any>;
   [k: string]: any;
 }
 
-export interface UserInfo {
-  name: string | null;
-  id: string;
-  profileImage: string | null;
-  type: string | null;
-  raw: any;
-}
-
-export interface ChannelInfo {
-  id: string;
-  name: string | null;
-  bannerImage: string | null;
-  raw: any;
-}
-
-export interface MessageInfo {
-  content: string;
-  id: string;
-  image: string | null;
-  raw: any;
-}
-
 export interface BotEvent {
   raw: IrisWebhookBody;
-
-  user: UserInfo;
-  channel: ChannelInfo;
-  message: MessageInfo;
-
-  // ✅ 최종 통일: event.send()
+  user: any | null;
+  channel: any | null;
+  message: any | null;
   send(text: string): Promise<any>;
 }
 
-// error 이벤트는 payload 모양이 다를 수 있어서 별도 타입
 export interface BotErrorEvent {
   error: unknown;
   event?: string;
+  raw?: any;
 }
 
-//////////////////////
-// Iris HTTP API 래퍼
-//////////////////////
 class IrisAPI {
   private http: AxiosInstance;
 
@@ -77,222 +45,179 @@ class IrisAPI {
     });
   }
 
-  // /reply
-  async send(payload: { type: string; room: string; data: string }): Promise<any> {
-    const body = {
+  async reply(payload: { type: string; roomId: string; data: string }) {
+    const res = await this.http.post("/reply", {
       type: String(payload.type),
-      room: String(payload.room),
+      roomId: String(payload.roomId),
       data: String(payload.data),
-    };
-    const res = await this.http.post("/reply", body);
+    });
     return res.data;
   }
 
-  // /query
-  async query(query: string, bind: any[] = []): Promise<any> {
+  async query(query: string, bind: any[] = []) {
     const res = await this.http.post("/query", { query, bind });
     return res.data; // { success, message, data: [...] }
   }
 
-  // /aot
-  async getAot(): Promise<any> {
+  async aot() {
     const res = await this.http.get("/aot");
-    return res.data; // { aot: { access_token, d_id, ... } }
+    return res.data;
   }
 }
 
-/////////////////////////////////////
-// irisDB: DB 조회 함수들 (내부용)
-/////////////////////////////////////
 function createIrisDB(iris: IrisAPI) {
-  const irisDB = {
-    async getUserInfo(userId: string | number) {
-      const sql = "SELECT * FROM open_chat_member WHERE user_id = ?";
-      const result = await iris.query(sql, [userId]);
-      return (result?.data && result.data[0]) || null;
+  return {
+    async user(userId: string | number) {
+      if (!userId) return null;
+      const r = await iris.query(
+        "SELECT * FROM open_chat_member WHERE user_id = ?",
+        [userId]
+      );
+      return (r?.data && r.data[0]) || null;
     },
 
-    async getChatInfo(chatId: string | number) {
-      const sql = "SELECT * FROM chat_rooms WHERE id = ?";
-      const result = await iris.query(sql, [chatId]);
-      return (result?.data && result.data[0]) || null;
+    async channel(chatId: string | number) {
+      if (!chatId) return null;
+      const r = await iris.query("SELECT * FROM chat_rooms WHERE id = ?", [
+        chatId,
+      ]);
+      return (r?.data && r.data[0]) || null;
     },
 
-    async findChatLog(logId: string | number) {
-      const sql = "SELECT * FROM chat_logs WHERE id = ?";
-      const result = await iris.query(sql, [logId]);
-      return (result?.data && result.data[0]) || null;
+    async log(msgId: string | number) {
+      if (!msgId) return null;
+      const r = await iris.query("SELECT * FROM chat_logs WHERE id = ?", [
+        msgId,
+      ]);
+      return (r?.data && r.data[0]) || null;
     },
   };
-
-  return irisDB;
 }
 
-//
-// ======================= buildEvent ======================= //
-// /message 바디 + irisDB + iris → event 생성
-//
-async function buildEvent(
-  data: IrisWebhookBody,
-  irisDB: ReturnType<typeof createIrisDB>,
-  iris: IrisAPI
-): Promise<BotEvent> {
-  const json = data?.json || {};
-  const userId = json.user_id;
-  const chatId = json.chat_id;
-  const logId = json.id; // chat_logs.id
+function quoteBigIntIds(text: string) {
+  const keys = [
+    "src_logId",
+    "src_userId",
+    "user_id",
+    "chat_id",
+    "id",
+    "prev_id",
+    "client_message_id",
+    "src_id",
+    "msg_id",
+  ];
 
-  // 1) DB 조회
-  const userRow = userId ? await irisDB.getUserInfo(userId) : null;
-  const chatRow = chatId ? await irisDB.getChatInfo(chatId) : null;
-  const logRow = logId ? await irisDB.findChatLog(logId) : null;
+  const pattern = new RegExp(
+    `"(${keys.join("|")})"\\s*:\\s*(-?\\d{15,})(?=\\s*[,}\\]])`,
+    "g"
+  );
 
-  // 2) 메시지 본문 (이벤트 종류 상관없이 안전하게)
-  const content =
-    (logRow && logRow.message) ||
-    json.message ||
-    data.msg ||
-    "";
+  return String(text).replace(pattern, (_m, k, num) => `"${k}":"${num}"`);
+}
 
-  // 3) 이미지 추출 (attachment.urls[0])
-  let image: string | null = null;
+function safeJsonParse<T>(value: any, fallback: T): T {
   try {
-    const attStr = (logRow && logRow.attachment) || json.attachment;
-    if (attStr) {
-      const att = typeof attStr === "string" ? JSON.parse(attStr) : attStr;
-      if (att?.urls?.length) image = att.urls[0];
-    }
-  } catch (_) {}
-
-  const event: BotEvent = {
-    raw: data,
-
-    user: {
-      name: userRow ? userRow.nickname : (data.sender || null),
-      id: userRow ? String(userRow.user_id) : String(userId || ""),
-      profileImage: userRow
-        ? (userRow.full_profile_image_url ||
-          userRow.profile_image_url ||
-          userRow.original_profile_image_url ||
-          null)
-        : null,
-      type: userRow ? (userRow.profile_type || null) : null,
-      raw: userRow,
-    },
-
-    channel: {
-      id: chatRow ? String(chatRow.id) : String(chatId || ""),
-      name: data.room || null,
-      bannerImage: null,
-      raw: chatRow,
-    },
-
-    message: {
-      content: String(content || ""),
-      id: logRow ? String(logRow.id) : String(logId || ""),
-      image,
-      raw: logRow || json,
-    },
-
-    // ✅ 최종 통일: event.send()
-    send: async (text: string) => {
-      if (!chatId) throw new Error("chat_id 없음");
-      return iris.send({
-        type: "text",
-        room: String(chatId),
-        data: String(text),
-      });
-    },
-  };
-
-  return event;
+    return JSON.parse(String(value));
+  } catch {
+    return fallback;
+  }
 }
 
-//
-// ======================= Bot 클래스 ======================= //
-//
+function nestedJson(body: IrisWebhookBody): IrisWebhookBody {
+  if (!body || typeof body !== "object") return body;
+
+  if (typeof body.msg === "string") {
+    body.msg = safeJsonParse<any>(body.msg, body.msg);
+  }
+
+  if (body.json && typeof body.json === "object") {
+    for (const key of ["message", "attachment", "v"]) {
+      const v = body.json[key];
+      if (typeof v === "string") {
+        const src = key === "attachment" ? quoteBigIntIds(v) : v;
+        body.json[key] = safeJsonParse<any>(src, v);
+      }
+    }
+  }
+
+  return body;
+}
+
 export class Bot {
-  private irisHost: string;
   private iris: IrisAPI;
   private irisDB: ReturnType<typeof createIrisDB>;
-
-  private port: number;
-  private endpointPath: string;
-
-  private FEED: {
-    JOIN: number;
-    LEAVE: number;
-    KICK: number;
-    DELETE: number;
-    HIDE: number;
-  };
-
-  private listeners: Record<EventName, Array<(event: any) => any>>;
 
   private app: Express;
   private server: any;
 
-  /**
-   * @param irisHost  예: "127.0.0.1"
-   * @param port      webhook 서버 포트 (예: 8080)
-   * @param opts      { endpointPath="/message", feedMap={} }
-   */
+  private bindHost: string;
+  private listenPort: number;
+
+  private endpointMessage: string;
+  private endpointReply: string;
+
+  private listeners: Record<EventName, Array<(event: any) => any>> = {
+    message: [],
+    join: [],
+    leave: [],
+    kick: [],
+    delete: [],
+    hide: [],
+    error: [],
+  };
+
   constructor(
     irisHost: string,
-    port: number = 3512,
-    opts: { endpointPath?: string; feedMap?: Partial<Bot["FEED"]> } = {}
+    listenPort: number,
+    opts?: {
+      bindHost?: string;
+      endpointMessage?: string;
+      endpointReply?: string;
+    }
   ) {
-    this.irisHost = String(irisHost || "127.0.0.1");
+    this.bindHost = opts?.bindHost ?? "0.0.0.0";
+    this.listenPort = Number(listenPort);
 
-    // Iris API는 3000 고정
-    this.iris = new IrisAPI(`http://${this.irisHost}:3000`);
+    this.endpointMessage = opts?.endpointMessage ?? "/message";
+    this.endpointReply = opts?.endpointReply ?? "/reply";
+
+    this.iris = new IrisAPI(`http://${irisHost}:3000`);
     this.irisDB = createIrisDB(this.iris);
-
-    this.port = Number(port);
-    this.endpointPath = String(opts.endpointPath || "/message");
-
-    // ✅ bot.js에서 쓰는 이벤트만 존재 (all/nickname 없음)
-    this.listeners = {
-      message: [],
-      join: [],
-      leave: [],
-      kick: [],
-      delete: [],
-      hide: [],
-      error: [],
-    };
-
-    // feedType 매핑(환경별로 다르면 덮어쓰기)
-    this.FEED = Object.assign(
-      { JOIN: 4, LEAVE: 2, KICK: 6, DELETE: 14, HIDE: 26 },
-      opts.feedMap || {}
-    );
 
     this.app = express();
     this.app.use(express.json({ limit: "2mb" }));
-    this.server = null;
+
+    this.app.post(this.endpointMessage, async (req: any, res: any) => {
+      await this.handleMessage(req, res);
+    });
+
+    this.app.post(this.endpointReply, async (req: any, res: any) => {
+      await this.handleReply(req, res);
+    });
   }
 
-  onEvent(eventName: "message", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "join", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "leave", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "kick", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "delete", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "hide", handler: (event: BotEvent) => any): void;
-  onEvent(eventName: "error", handler: (event: BotErrorEvent) => any): void;
-  onEvent(eventName: EventName, handler: (event: any) => any): void {
-    if (!this.listeners[eventName]) throw new Error(`지원하지 않는 이벤트: ${eventName}`);
-    this.listeners[eventName].push(handler);
+  onEvent(name: "message", handler: (event: BotEvent) => any): void;
+  onEvent(name: "join", handler: (event: BotEvent) => any): void;
+  onEvent(name: "leave", handler: (event: BotEvent) => any): void;
+  onEvent(name: "kick", handler: (event: BotEvent) => any): void;
+  onEvent(name: "delete", handler: (event: BotEvent) => any): void;
+  onEvent(name: "hide", handler: (event: BotEvent) => any): void;
+  onEvent(name: "error", handler: (event: BotErrorEvent) => any): void;
+  onEvent(name: EventName, handler: (event: any) => any): void {
+    this.listeners[name].push(handler);
   }
 
-  private async emit(eventName: EventName, payload: any): Promise<void> {
-    const list = this.listeners[eventName] || [];
-    for (const fn of list) {
+  private async emit(name: EventName, payload: any) {
+    for (const fn of this.listeners[name]) {
       try {
-        await Promise.resolve().then(() => fn(payload));
+        await Promise.resolve(fn(payload));
       } catch (err) {
-        if (eventName !== "error") {
-          await this.emit("error", { error: err, event: eventName } satisfies BotErrorEvent);
+        if (name !== "error") {
+          await this.emit("error", {
+            error: err,
+            event: name,
+            raw: payload?.raw,
+          } as BotErrorEvent);
         }
       }
     }
@@ -300,50 +225,116 @@ export class Bot {
 
   private detectEvent(body: IrisWebhookBody): Exclude<EventName, "error"> | null {
     const json = body?.json || {};
-    const type = String((json as any).type ?? "");
+    const type = String(json.type ?? "");
 
-    // 1: 일반 메시지
     if (type === "1") return "message";
 
-    // 0: 피드 이벤트
     if (type === "0") {
-      const feedType = Number((json as any).feedType);
-      if (feedType === this.FEED.JOIN) return "join";
-      if (feedType === this.FEED.LEAVE) return "leave";
-      if (feedType === this.FEED.KICK) return "kick";
-      if (feedType === this.FEED.DELETE) return "delete";
-      if (feedType === this.FEED.HIDE) return "hide";
+      const feedType = Number(json?.feedType) || Number(json?.message?.feedType) || 0;
+
+      if (feedType === 4) return "join";
+      if (feedType === 2) return "leave";
+      if (feedType === 6) return "kick";
+      if (feedType === 14) return "delete";
+      if (feedType === 26) return "hide";
     }
 
     return null;
   }
 
-  start(): void {
-    this.app.post(this.endpointPath, async (req: Request, res: Response) => {
-      try {
-        const body = (req.body || {}) as IrisWebhookBody;
-        const eventName = this.detectEvent(body);
+  private async buildEvent(body: IrisWebhookBody): Promise<BotEvent> {
+    const json = body?.json || {};
 
-        if (eventName) {
-          const event = await buildEvent(body, this.irisDB, this.iris);
-          await this.emit(eventName, event);
-        }
+    const chatId = json.chat_id ?? json.roomId ?? json.room ?? body.room;
+    const userId = json.user_id ?? json.userId;
 
-        res.json({ ok: true, event: eventName });
-      } catch (err) {
-        console.error("[Bot] /message 처리 오류:", err);
-        await this.emit("error", { error: err, event: "webhook" } satisfies BotErrorEvent);
-        res.status(500).json({ ok: false, error: String(err) });
+    const msgId = json.msg_id ?? json.id;
+
+    const [user, channel, message] = await Promise.all([
+      this.irisDB.user(userId),
+      this.irisDB.channel(chatId),
+      this.irisDB.log(msgId),
+    ]);
+
+    return {
+      raw: body,
+      user,
+      channel,
+      message,
+      send: async (text: string) => {
+        if (!chatId) throw new Error("chat_id 없음");
+        return this.iris.reply({
+          type: "text",
+          roomId: String(chatId),
+          data: String(text),
+        });
+      },
+    };
+  }
+
+  private async handleMessage(req: Request, res: Response) {
+    try {
+      const body = nestedJson((req.body || {}) as IrisWebhookBody);
+      const evName = this.detectEvent(body);
+
+      if (!evName) {
+        res.json({ ok: true, ignored: true });
+        return;
       }
-    });
 
-    this.server = this.app.listen(this.port, () => {
-      console.log(`[Bot] Webhook 서버: http://${this.irisHost}:${this.port}${this.endpointPath}`);
-      console.log(`[Bot] Iris API     : http://${this.irisHost}:3000`);
+      const ev = await this.buildEvent(body);
+      await this.emit(evName, ev);
+
+      res.json({ ok: true, event: evName });
+    } catch (err) {
+      await this.emit("error", {
+        error: err,
+        event: "webhook",
+        raw: req.body,
+      } as BotErrorEvent);
+      res.status(500).json({ ok: false, error: String(err) });
+    }
+  }
+
+  private async handleReply(req: Request, res: Response) {
+    try {
+      const body = (req.body || {}) as any;
+
+      const type = body.type;
+      const roomId = body.roomId ?? body.room;
+      const data = body.data;
+
+      if (type == null || roomId == null || data == null) {
+        res.status(400).json({ ok: false, error: "type/roomId/data 필요" });
+        return;
+      }
+
+      const irisRes = await this.iris.reply({
+        type: String(type),
+        roomId: String(roomId),
+        data: String(data),
+      });
+
+      res.json({ ok: true, forwarded: true, iris: irisRes });
+    } catch (err) {
+      await this.emit("error", {
+        error: err,
+        event: "reply",
+        raw: req.body,
+      } as BotErrorEvent);
+      res.status(500).json({ ok: false, error: String(err) });
+    }
+  }
+
+  start() {
+    this.server = this.app.listen(this.listenPort, this.bindHost, () => {
+      console.log(`[Bot] listen: http://${this.bindHost}:${this.listenPort}`);
+      console.log(`[Bot] POST  : ${this.endpointMessage} (receive)`);
+      console.log(`[Bot] POST  : ${this.endpointReply} (forward to Iris:3000)`);
     });
   }
 
-  stop(): void {
+  stop() {
     if (this.server) {
       this.server.close();
       this.server = null;
