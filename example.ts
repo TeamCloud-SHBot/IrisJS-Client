@@ -1,5 +1,5 @@
 // bot.ts
-import { Bot, BotEvent, BotErrorEvent } from "./iris_client";
+import { Bot, BotEvent, BotErrorEvent } from "./iris-client";
 
 const bot = new Bot("127.30.1.30", 2907);
 
