@@ -1,0 +1,79 @@
+{
+    "text": "테스트 메시지",
+    "type": "1",
+    "feedType": null,
+    "user": {
+        "name": "홍길동",
+        "id": "1122334455667788990",
+        "member_type": "1",
+        "profile_type": "16",
+        "raw": {
+            "profile_type": "16",
+            "profile_image_url": "https://open.kakaocdn.net/dn/img_s.jpg",
+            "profile_link_id": "123456789",
+            "privilege": "0",
+            "type": "1000",
+            "link_id": "123456789",
+            "user_id": "1122334455667788990",
+            "nickname": "홍길동",
+            "report": "0",
+            "original_profile_image_url": "https://open.kakaocdn.net/dn/img.jpg",
+            "_id": "2120",
+            "enc": "31",
+            "link_member_type": "1",
+            "full_profile_image_url": "https://open.kakaocdn.net/dn/img_l.jpg",
+            "involved_chat_id": "1122334455667788990"
+        }
+    },
+    "channel": {
+        "id": "1122334455667788990",
+        "name": "오픈채팅방"
+    },
+    "chat_id": "1122334455667788990",
+    "prev_id": "11222334455667788989",
+    "created_at": "123456789",
+    "attachment": {},
+    "v": {
+        "notDecoded": false,
+        "origin": "MSG",
+        "c": "01-01 00:00:00",
+        "modifyRevision": 0,
+        "isSingleDefaultEmoticon": false,
+        "defaultEmoticonsCount": 0,
+        "isMine": false,
+        "enc": 31
+    },
+    "deleted_at": "0",
+    "raw": {
+        "msg": "테스트 메시지",
+        "room": "오픈채팅방",
+        "sender": "홍길동",
+        "json": {
+            "_id": "672529",
+            "id": "1122334455667788990",
+            "type": "1",
+            "chat_id": "1122334455667788990",
+            "user_id": "1122334455667788990",
+            "message": "테스트 메시지",
+            "attachment": {},
+            "created_at": "123456789",
+            "deleted_at": "0",
+            "client_message_id": "123456789",
+            "prev_id": "11222334455667788989",
+            "referer": "0",
+            "supplement": null,
+            "v": {
+                "notDecoded": false,
+                "origin": "MSG",
+                "c": "01-01 00:00:00",
+                "modifyRevision": 0,
+                "isSingleDefaultEmoticon": false,
+                "defaultEmoticonsCount": 0,
+                "isMine": false,
+                "enc": 31
+            },
+            "thread_id": null,
+            "scope": null
+        }
+    }
+}
