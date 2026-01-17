@@ -10,7 +10,7 @@ bot.onEvent("all", async (ctx) => {
   console.log(
     `[ALL] ${ctx.channel?.name} | ${ctx.user?.name} | ${ctx.message?.content}`
   );
-});
+}); 
 
 /* =========================
  * 메시지 이벤트
@@ -20,7 +20,7 @@ bot.onEvent("message", async (ctx) => {
   if (!text) return;
 
   if (text === "!핑") {
-    await ctx.reply("퐁!");
+    await ctx.send("퐁!");
   }
 });
 
@@ -28,35 +28,35 @@ bot.onEvent("message", async (ctx) => {
  * 입장 이벤트
  * ========================= */
 bot.onEvent("join", async (ctx) => {
-  await ctx.reply(`${ctx.user.name}님이 입장하셨습니다 👋`);
+  await ctx.send(`${ctx.user.name}님이 입장하셨습니다 👋`);
 });
 
 /* =========================
  * 퇴장 이벤트
  * ========================= */
 bot.onEvent("leave", async (ctx) => {
-  await ctx.reply(`${ctx.user.name}님이 퇴장하셨습니다.`);
+  await ctx.send(`${ctx.user.name}님이 퇴장하셨습니다.`);
 });
 
 /* =========================
  * 강퇴 이벤트
  * ========================= */
 bot.onEvent("kick", async (ctx) => {
-  await ctx.reply(`${ctx.user.name}님이 강퇴되었습니다.`);
+  await ctx.send(`${ctx.user.name}님이 강퇴되었습니다.`);
 });
 
 /* =========================
  * 메시지 삭제
  * ========================= */
 bot.onEvent("delete", async (ctx) => {
-  await ctx.reply("메시지가 삭제되었습니다.");
+  await ctx.send("메시지가 삭제되었습니다.");
 });
 
 /* =========================
  * 메시지 가리기
  * ========================= */
 bot.onEvent("hide", async (ctx) => {
-  await ctx.reply("메시지가 가려졌습니다.");
+  await ctx.send("메시지가 가려졌습니다.");
 });
 
 /* =========================

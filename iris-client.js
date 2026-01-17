@@ -83,7 +83,7 @@ class Bot {
       channel: normalizeChannel(channel),
       message: normalizeMessage(message),
 
-      reply: (text) => this.reply(json.log_id, text)
+      send: (text) => this.send(json.log_id, text)
     };
   }
 
