@@ -1,17 +1,20 @@
-  const express = require("express");
+const express = require("express");
 const axios = require("axios");
 
-
 class Bot {
-  constructor(irisHost, irisPort) {
-    this.irisHost = String(irisHost);
-    this.irisPort = Number(irisPort);
+  /**
+   * @param {string} host
+   * @param {number} port
+   */
+  constructor(host, port) {
+    this.host = String(host);
+    this.port = Number(port);
 
     this.ENDPOINT = {
       MESSAGE: "/message",
-      QUERY: `http://${this.irisHost}:3000/query`,
-      REPLY: `http://${this.irisHost}:3000/reply`,
-      AOT: `http://${this.irisHost}:3000/aot`,
+      QUERY: `http://${this.host}:3000/query`,
+      REPLY: `http://${this.host}:3000/reply`,
+      AOT: `http://${this.host}:3000/aot`,
     };
 
     this.app = express();
@@ -70,14 +73,16 @@ class Bot {
   async _dispatch(raw) {
     const j = raw?.json ?? raw ?? {};
 
-    // ✅ 요구사항: /message에서 userId/chatId/logId(json.id)만 사용
+    // ✅ 요구사항: /message에서 userId/chatId/logId만 사용
     const userId = j.user_id;
     const chatId = j.chat_id;
-    const logId = j.id;
+
+    // ✅ id/msg_id 둘 다 지원 (Rhino/Iris 구현 차이 대응)
+    const logId = j.id ?? j.msg_id;
 
     if (userId == null || chatId == null || logId == null) {
       await this._emit("error", {
-        error: new Error("필수 키 누락: user_id / chat_id / id"),
+        error: new Error("필수 키 누락: user_id / chat_id / (id or msg_id)"),
         raw,
         event: "parse",
       });
@@ -112,6 +117,14 @@ class Bot {
       channel.send = async (text) => this._reply(chatId, text);
       channel.react = async (type = 3) => this._react(chatId, logId, channel.linkId, type);
       channel.share = async (noticeId) => this._share(noticeId, channel.linkId);
+
+      // ✅ 편의: event.send 별칭 (예제 코드 호환)
+      event.send = async (text) => channel.send(text);
+    } else {
+      // 채널이 없으면 send 호출 방지용(에러 덜 나게)
+      event.send = async () => {
+        throw new Error("channel 정보가 없어 send를 사용할 수 없습니다.");
+      };
     }
 
     // all 먼저
@@ -239,8 +252,9 @@ class Bot {
    * Server Start
    * ========================= */
   start() {
-    this.app.listen(this.irisPort, this.irisHost, () => {
-      console.log(`[IrisBot] listen: http://${this.irisHost}:${this.irisPort}`);
+    this.app.listen(this.listenPort, this.listenHost, () => {
+      console.log(`[IrisBot] listen: http://${this.listenHost}:${this.listenPort}`);
+      console.log(`[IrisBot] iris api: http://${this.host}:3000`);
     });
   }
 }
