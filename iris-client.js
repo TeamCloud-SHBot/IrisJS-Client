@@ -252,8 +252,8 @@ class Bot {
    * Server Start
    * ========================= */
   start() {
-    this.app.listen(this.listenPort, this.listenHost, () => {
-      console.log(`[IrisBot] listen: http://${this.listenHost}:${this.listenPort}`);
+    this.app.listen(this.port, this.host, () => {
+      console.log(`[IrisBot] listen: http://${this.host}:${this.port}`);
       console.log(`[IrisBot] iris api: http://${this.host}:3000`);
     });
   }
