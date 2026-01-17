@@ -108,18 +108,18 @@ class Bot {
       raw,
 
       // ✅ TalkAPI (event.talkAPI)
-      talkAPI: async (text, attach = {}, type = 1) =>
-        this._talkAPI(chatId, text, attach, type),
+      talkAPI: async (msg, attach = {}, type = 1) =>
+        this._talkAPI(chatId, msg, attach, type),
     };
 
     // ✅ channel API 부착
     if (channel) {
-      channel.send = async (text) => this._reply(chatId, text);
+      channel.send = async (data) => this._reply(chatId, data);
       channel.react = async (type = 3) => this._react(chatId, logId, channel.linkId, type);
       channel.share = async (noticeId) => this._share(noticeId, channel.linkId);
 
       // ✅ 편의: event.send 별칭 (예제 코드 호환)
-      event.send = async (text) => channel.send(text);
+      event.send = async (data) => channel.send(data);
     } else {
       // 채널이 없으면 send 호출 방지용(에러 덜 나게)
       event.send = async () => {
@@ -149,11 +149,17 @@ class Bot {
   /* =========================
    * Iris Reply (3000/reply)
    * ========================= */
-  async _reply(chatId, text) {
+  /**
+   * 
+   * @param {String} type ["text", "image", "multi_image"]
+   * @param {Number} roomId 
+   * @param {String|Array} data string || string[]
+   */
+  async _reply(type, roomId, data) {
     await this.http.post(this.ENDPOINT.REPLY, {
-      type: "text",
-      roomId: String(chatId),
-      data: String(text),
+      type: type,
+      room: roomId,
+      data: data,
     });
   }
 
