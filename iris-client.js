@@ -1,176 +1,219 @@
-// iris-client.js
+"use strict";
+
 const express = require("express");
 const axios = require("axios");
 
 class Bot {
-  constructor(host, port) {
-    this.host = host;
-    this.port = port;
+  constructor(irisHost, listenPort, opts = {}) {
+    this.irisHost = String(irisHost);
+    this.listenPort = Number(listenPort);
+    this.listenHost = opts.listenHost ?? "0.0.0.0";
+    this.endpointMessage = opts.endpointMessage ?? "/message";
 
     this.ENDPOINT = {
-      MESSAGE: "/message",
-      REPLY: `http://${this.host}:3000/reply`,
-      QUERY: `http://${this.host}:3000/query`
+      MESSAGE: this.endpointMessage,
+      QUERY: `http://${this.irisHost}:3000/query`,
+      REPLY: `http://${this.irisHost}:3000/reply`,
+      AOT: `http://${this.irisHost}:3000/aot`,
     };
 
-
     this.app = express();
-    this.server = null;
-    this.http = axios.create();
-    this.events = Object.create(null);
+    this.http = axios.create({
+      timeout: 10000,
+      headers: { "Content-Type": "application/json" },
+    });
 
-    this.app.use(express.json());
+    this.events = Object.create(null);
+    this.app.use(express.json({ limit: "4mb" }));
     this.app.post(this.ENDPOINT.MESSAGE, this._onWebhook.bind(this));
   }
-
 
   onEvent(name, handler) {
     (this.events[name] ??= []).push(handler);
   }
 
-  async emit(name, ctx) {
+  async _emit(name, event) {
     for (const fn of this.events[name] ?? []) {
-      await fn(ctx);
-    }
-    if (name !== "all") {
-      for (const fn of this.events.all ?? []) {
-        await fn(ctx);
-      }
+      await fn(event);
     }
   }
 
   async _onWebhook(req, res) {
     try {
-      await this._dispatchEvent(req.body);
+      await this._dispatch(req.body);
       res.json({ ok: true });
     } catch (e) {
-      await this.emit("error", { error: e });
+      await this._emit("error", { error: e, raw: req.body });
       res.status(500).json({ ok: false });
     }
   }
 
-  async _dispatchEvent(json) {
-    const ctx = await this._createContext(json);
+  _detectEvent(raw) {
+    const j = raw?.json ?? raw ?? {};
+    if (String(j.type) === "1") return "message";
 
-    await this.emit("all", ctx);
-
-    if (json.type === "1") {
-      return this.emit("message", ctx);
+    if (String(j.type) === "0") {
+      const f = Number(j.feedType ?? j?.message?.feedType);
+      return { 4: "join", 2: "leave", 6: "kick", 14: "delete", 26: "hide" }[f];
     }
-
-    if (json.type === "0") {
-      const feedMap = {
-        4: "join",
-        2: "leave",
-        6: "kick",
-        14: "delete",
-        26: "hide"
-      };
-      const event = feedMap[json.feedType];
-      if (event) await this.emit(event, ctx);
-    }
+    return null;
   }
 
-  async _createContext(json) {
-    const [user, channel, message] = await Promise.all([
-      this.db.getUser(json.user_id),
-      this.db.getChannel(json.chat_id),
-      this.db.getMessage(json.log_id)
+  async _dispatch(raw) {
+    const j = raw?.json ?? raw ?? {};
+    const userId = j.user_id;
+    const chatId = j.chat_id;
+    const logId = j.id;
+
+    const [u, c, m] = await Promise.all([
+      this._row("open_chat_member", "user_id", userId),
+      this._row("chat_rooms", "id", chatId),
+      this._row("chat_logs", "id", logId),
     ]);
 
-    return {
-      user: normalizeUser(user),
-      channel: normalizeChannel(channel),
-      message: normalizeMessage(message),
+    const user = normalizeUser(u);
+    const channel = normalizeChannel(c);
+    const message = normalizeMessage(m);
 
-      send: (text) => this.send(json.log_id, text)
+    /* =========================
+     * event 객체 (최종 형태)
+     * ========================= */
+    const event = {
+      user,
+      channel,
+      message,
+      raw,
+
+      /* 🔥 TalkAPI */
+      talkAPI: async (text, attach = {}, type = 1) =>
+        this._talkAPI(chatId, text, attach, type),
     };
-  }
 
-  async send(logId, text) {
-    return this.http.post(this.ENDPOINT.REPLY, { log_id: logId, text });
-  }
-
-  db = {
-    query: async (sql, bind = []) => {
-      const r = await this.http.post(this.ENDPOINT.QUERY, { query: sql, bind });
-      return r.data?.data || [];
-    },
-
-    getUser: async (id) =>
-      (await this.db.query(
-        "SELECT * FROM open_chat_member WHERE user_id = ?",
-        [id]
-      ))[0] ?? null,
-
-    getChannel: async (id) =>
-      (await this.db.query(
-        "SELECT * FROM chat_rooms WHERE id = ?",
-        [id]
-      ))[0] ?? null,
-
-    getMessage: async (id) =>
-      (await this.db.query(
-        "SELECT * FROM chat_logs WHERE id = ?",
-        [id]
-      ))[0] ?? null,
-
-    getPrevMessage: async (id) => {
-      const r = await this.db.query(
-        "SELECT prev_id FROM chat_logs WHERE id = ?",
-        [id]
-      );
-      return r[0]?.prev_id ? this.db.getMessage(r[0].prev_id) : null;
-    },
-
-    getNextMessage: async (id) => {
-      const r = await this.db.query(
-        "SELECT id FROM chat_logs WHERE prev_id = ?",
-        [id]
-      );
-      return r[0]?.id ? this.db.getMessage(r[0].id) : null;
+    /* 🔥 channel API */
+    if (channel) {
+      channel.send = async (text) => this._reply(chatId, text);
+      channel.react = async (type = 3) =>
+        this._react(chatId, logId, channel.linkId, type);
+      channel.share = async (noticeId) =>
+        this._share(noticeId, channel.linkId);
     }
-  };
 
+    await this._emit("all", event);
 
-  start() {
-    this.server = this.app.listen(this.port, this.host, () => {
-      console.log(`[IrisBot] http://${this.host}:${this.port}`);
+    const ev = this._detectEvent(raw);
+    if (ev) await this._emit(ev, event);
+  }
+
+  async _row(table, key, value) {
+    const r = await this.http.post(this.ENDPOINT.QUERY, {
+      query: `SELECT * FROM ${table} WHERE ${key} = ?`,
+      bind: [String(value)],
+    });
+    return r.data?.data?.[0] ?? null;
+  }
+
+  /* =========================
+   * Iris API / External API
+   * ========================= */
+
+  async _reply(chatId, text) {
+    await this.http.post(this.ENDPOINT.REPLY, {
+      type: "text",
+      roomId: String(chatId),
+      data: String(text),
     });
   }
 
-  stop() {
-    this.server?.close();
+  async _aot() {
+    const r = await this.http.get(this.ENDPOINT.AOT);
+    const a = r.data?.aot;
+    return {
+      accessToken: a.access_token,
+      dId: a.d_id,
+      session: `${a.access_token}-${a.d_id}`,
+    };
+  }
+
+  async _talkAPI(chatId, msg, attach = {}, type = 1) {
+    const s = await this._aot();
+    await axios.post(
+      "https://talk-external.kakao.com/talk/write",
+      {
+        chatId: String(chatId),
+        type,
+        message: String(msg),
+        attachment: attach,
+        msgId: Date.now(),
+      },
+      {
+        headers: {
+          Authorization: s.accessToken,
+          Duuid: s.dId,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  }
+
+  async _react(chatId, logId, linkId, type) {
+    const s = await this._aot();
+    await axios.post(
+      `https://talk-pilsner.kakao.com/messaging/chats/${chatId}/bubble/reactions`,
+      {
+        logId: String(logId),
+        reqId: Date.now(),
+        type,
+        linkId,
+      },
+      {
+        headers: {
+          Authorization: s.session,
+          "content-type": "application/json",
+        },
+      }
+    );
+  }
+
+  async _share(noticeId, linkId) {
+    const s = await this._aot();
+    const base = linkId
+      ? "https://open.kakao.com/moim"
+      : "https://talkmoim-api.kakao.com";
+    await axios.post(
+      `${base}/posts/${noticeId}/share${linkId ? `?link_id=${linkId}` : ""}`,
+      null,
+      {
+        headers: {
+          Authorization: s.session,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+  }
+
+  start() {
+    this.app.listen(this.listenPort, this.listenHost, () => {
+      console.log(`[IrisBot] listen http://${this.listenHost}:${this.listenPort}`);
+    });
   }
 }
 
-
+/* =========================
+ * normalize
+ * ========================= */
 function normalizeUser(u) {
   if (!u) return null;
-  return {
-    id: String(u.user_id),
-    name: u.nickname,
-    profileImage: u.profile_image,
-    type: u.link_member_type
-  };
+  return { id: u.user_id, name: u.nickname, raw: u };
 }
 
 function normalizeChannel(c) {
   if (!c) return null;
-  return {
-    id: String(c.id),
-    name: c.name,
-    bannerImage: c.banner_image
-  };
+  return { id: c.id, name: c.name, linkId: c.link_id, raw: c };
 }
 
 function normalizeMessage(m) {
   if (!m) return null;
-  return {
-    id: String(m.id),
-    content: m.message,
-    image: m.attachment?.image ?? null
-  };
+  return { id: m.id, content: m.message, raw: m };
 }
 
 module.exports = { Bot };
