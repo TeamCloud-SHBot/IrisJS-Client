@@ -62,9 +62,30 @@ class Bot {
     if (type === "1") return "message";
 
     if (type === "0") {
-      const feedType = Number(j.feedType ?? j?.message?.feedType ?? 0);
-      const map = { 4: "join", 2: "leave", 6: "kick", 14: "delete", 26: "hide" };
-      return map[feedType] ?? null;
+      let feedType = j.feedType ?? j.feed_type ?? null;
+
+      if (feedType == null && j.message && typeof j.message === "object") {
+        feedType = j.message.feedType ?? j.message.feed_type ?? null;
+      }
+      if (feedType == null && typeof j.message === "string") {
+        try {
+          const parsed = JSON.parse(j.message);
+          feedType = parsed.feedType ?? parsed.feed_type ?? null;
+        } catch (e) {
+        }
+      }
+
+      const ft = Number(feedType ?? 0);
+
+      const map = {
+        4: "join",
+        2: "leave",
+        6: "kick",
+        14: "delete",
+        26: "hide",
+      };
+
+      return map[ft] ?? null;
     }
 
     return null;
@@ -73,64 +94,64 @@ class Bot {
   async _dispatch(raw) {
     const j = raw?.json ?? raw ?? {};
 
-    // ✅ 요구사항: /message에서 userId/chatId/logId만 사용
-    const userId = j.user_id;
-    const chatId = j.chat_id;
-
-    // ✅ id/msg_id 둘 다 지원 (Rhino/Iris 구현 차이 대응)
-    const logId = j.id ?? j.msg_id;
-
-    if (userId == null || chatId == null || logId == null) {
-      await this._emit("error", {
-        error: new Error("필수 키 누락: user_id / chat_id / (id or msg_id)"),
-        raw,
-        event: "parse",
-      });
-      return;
-    }
-
-    // ✅ 3개 ID로만 DB 조회
     const [userRow, channelRow, logRow] = await Promise.all([
-      this._row("open_chat_member", "user_id", userId),
-      this._row("chat_rooms", "id", chatId),
-      this._row("chat_logs", "id", logId),
+      this._row("open_chat_member", "user_id", j.user_id),
+      this._row("chat_rooms", "id", j.chat_id),
+      this._row("chat_logs", "id", j.id ?? j.msg_id),
     ]);
 
     const user = normalizeUser(userRow);
     const channel = normalizeChannel(channelRow);
     const message = normalizeMessage(logRow);
 
-    // event 객체 생성
     const event = {
       user,
       channel,
       message,
       raw,
 
-      // ✅ TalkAPI (event.talkAPI)
       talkAPI: async (msg, attach = {}, type = 1) =>
-        this._talkAPI(chatId, msg, attach, type),
+        this._talkAPI(j.chat_id, msg, attach, type),
     };
 
-    // ✅ channel API 부착
     if (channel) {
-      channel.send = async (data) => this._reply(chatId, data);
-      channel.react = async (type = 3) => this._react(chatId, logId, channel.linkId, type);
+      channel.send = async (data) => this._reply("text", j.chat_id, data);
+      channel.react = async (type = 3) => this._react(j.chat_id, j.id ?? j.msg_id, channel.linkId, type);
       channel.share = async (noticeId) => this._share(noticeId, channel.linkId);
 
-      // ✅ 편의: event.send 별칭 (예제 코드 호환)
       event.send = async (data) => channel.send(data);
     } else {
-      // 채널이 없으면 send 호출 방지용(에러 덜 나게)
       event.send = async () => {
         throw new Error("channel 정보가 없어 send를 사용할 수 없습니다.");
       };
     }
 
-    // all 먼저
+
+    if (j.type === "0" && typeof j.message === "string") {
+      try {
+        const feed = JSON.parse(j.message);
+        event.feed = feed;
+
+        const member = feed?.members?.[0];
+        if (member) {
+        if (event.user) {
+          if (member.userId != null) event.user.id = String(member.userId);
+          if (member.nickName != null) event.user.name = String(member.nickName);
+        } else {
+          event.user = {
+            id: member.userId != null ? String(member.userId) : "",
+            name: member.nickName != null ? String(member.nickName) : null,
+            profileImage: null,
+            type: null,
+            raw: member,
+          };
+        }
+      }
+    } catch(e) {}
+  }
+
     await this._emit("all", event);
 
-    // 실제 이벤트
     const evName = this._detectEvent(raw);
     if (evName) await this._emit(evName, event);
   }
@@ -178,10 +199,9 @@ class Bot {
   }
 
   /* =========================
-   * External APIs (utils.js style)
+   * External APIs
    * ========================= */
 
-  // TalkAPI
   async _talkAPI(chatId, msg, attach = {}, type = 1) {
     const s = await this._aotSession();
 
@@ -207,7 +227,6 @@ class Bot {
     );
   }
 
-  // Reaction
   async _react(chatId, logId, linkId, type = 3) {
     const s = await this._aotSession();
 
@@ -232,7 +251,6 @@ class Bot {
     );
   }
 
-  // Notice Share
   async _share(noticeId, linkId) {
     if (!noticeId) throw new Error("share: noticeId가 없습니다.");
 
