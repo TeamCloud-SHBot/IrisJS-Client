@@ -10,7 +10,31 @@ const bot = new Bot("127.0.0.1", 8080); // Iris 서버의 IP와 포트를 입력
 bot.onEvent("message", async (event) => {
 
   if (event.message?.content === "!핑") {
-    await event.send("퐁!");
+    await event.channel.send("퐁!");
+  }
+
+  if (event.message?.content.startsWith("ev.")) {
+    try {
+        const AsyncFunction = Object.getPrototypeOf(
+          async function () {}
+        ).constructor;
+
+        const fn = new AsyncFunction(
+          "event",
+          "channel",
+          `"use strict"; return ( ${event.message.content.replace("ev.", "")} );`
+        );
+
+        const result = await fn(event, event.channel);
+
+        await event.channel.send(
+          typeof result === "string"
+            ? result
+            : JSON.stringify(result, null, 2)
+        );
+      } catch (e) {
+        await event.channel.send("❌ ERROR: " + (e?.message ?? String(e)));
+      }
   }
 });
 
@@ -18,35 +42,35 @@ bot.onEvent("message", async (event) => {
  * 입장 이벤트
  * ========================= */
 bot.onEvent("join", async (event) => {
-  await event.send(`${event.user?.name}님이 입장하셨습니다 👋`);
+  await event.channel.send(`${event.user?.name}님이 입장하셨습니다 👋`);
 });
 
 /* =========================
  * 퇴장 이벤트
  * ========================= */
 bot.onEvent("leave", async (event) => {
-  await event.send(`${event.user?.name}님이 퇴장하셨습니다.`);
+  await event.channel.send(`${event.user?.name}님이 퇴장하셨습니다.`);
 });
 
 /* =========================
  * 강퇴 이벤트
  * ========================= */
 bot.onEvent("kick", async (event) => {
-  await event.send(`${event.user?.name}님이 강퇴되었습니다.`);
+  await event.channel.send(`${event.user?.name}님이 강퇴되었습니다.`);
 });
 
 /* =========================
  * 메시지 삭제
  * ========================= */
 bot.onEvent("delete", async (event) => {
-  await event.send("메시지가 삭제되었습니다.");
+  await event.channel.send("메시지가 삭제되었습니다.");
 });
 
 /* =========================
  * 메시지 가리기
  * ========================= */
 bot.onEvent("hide", async (event) => {
-  await event.send("메시지가 가려졌습니다.");
+  await event.channel.send("메시지가 가려졌습니다.");
 });
 
 /* =========================

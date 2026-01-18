@@ -101,7 +101,7 @@ class Bot {
     ]);
 
     const user = normalizeUser(userRow);
-    const channel = normalizeChannel(channelRow);
+    const channel = normalizeChannel(channelRow, raw);
     const message = normalizeMessage(logRow);
 
     const event = {
@@ -109,6 +109,26 @@ class Bot {
       channel,
       message,
       raw,
+
+      GET: async (type, id) => {
+        switch (type) {
+          case "user": {
+            const uRow = await this._row("open_chat_member", "user_id", id);
+            console.log(normalizeUser(uRow));
+            return normalizeUser(uRow);
+          }
+          case "channel": {
+            const cRow = await this._row("chat_rooms", "id", id);
+            console.log(normalizeChannel(cRow, raw));
+            return normalizeChannel(cRow, raw);
+          }
+          case "message": {
+            const mRow = await this._row("chat_logs", "id", id);
+            console.log(normalizeMessage(mRow));
+            return normalizeMessage(mRow);
+          }
+        }
+      },
 
       talkAPI: async (msg, attach = {}, type = 1) =>
         this._talkAPI(j.chat_id, msg, attach, type),
@@ -291,18 +311,19 @@ function normalizeUser(u) {
   return {
     id: String(u.user_id ?? ""),
     name: u.nickname ?? u.name ?? null,
-    profileImage: u.profile_image_url ?? u.profile_image ?? null,
     type: u.link_member_type ?? u.type ?? null,
+    image: u.original_profile_image_url ?? u.original_profile_image_url ?? null,
+    memberType: u.link_member_type ?? null,
     raw: u,
   };
 }
 
-function normalizeChannel(c) {
-  if (!c) return null;
+function normalizeChannel(c, r) {
+  if (!c) return null; 
   return {
     id: String(c.id ?? ""),
-    name: c.name ?? null,
-    linkId: c.link_id ?? null,
+    name: r.room ?? null,
+    members: JSON.parse(c.members) ?? null,
     raw: c,
   };
 }
@@ -310,8 +331,22 @@ function normalizeChannel(c) {
 function normalizeMessage(m) {
   if (!m) return null;
   return {
+    type: m.type ?? null,
     id: String(m.id ?? ""),
-    content: m.message ?? m.content ?? "",
+    content: m.message ?? null,
+
+    prev: m.prev_id ?? null,
+    
+    attachments: m.attachments ? {
+      file: m.attachment.url ?? null,
+
+      reply: src_logId ? {
+        id: String(m.src_logId ?? ""),
+        user: m.src_userId ?? null,
+        content: m.src_message ?? null,
+      } : null,
+    } : null,
+
     raw: m,
   };
 }
